@@ -6,13 +6,13 @@ use std::{
 use tracing::{debug, warn};
 use turbopath::AbsoluteSystemPath;
 
-use crate::{prefixed::PrefixedUI, Error, PrefixedWriter};
+use crate::Error;
 
 /// Receives logs and multiplexes them to a log file and/or a prefixed
 /// writer
 pub struct LogWriter<W> {
     log_file: Option<BufWriter<File>>,
-    prefixed_writer: Option<PrefixedWriter<W>>,
+    writer: Option<W>,
 }
 
 /// Derive didn't work here.
@@ -21,7 +21,7 @@ impl<W> Default for LogWriter<W> {
     fn default() -> Self {
         Self {
             log_file: None,
-            prefixed_writer: None,
+            writer: None,
         }
     }
 }
@@ -43,14 +43,14 @@ impl<W: Write> LogWriter<W> {
         Ok(())
     }
 
-    pub fn with_prefixed_writer(&mut self, prefixed_writer: PrefixedWriter<W>) {
-        self.prefixed_writer = Some(prefixed_writer);
+    pub fn with_writer(&mut self, writer: W) {
+        self.writer = Some(writer);
     }
 }
 
 impl<W: Write> Write for LogWriter<W> {
     fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
-        match (&mut self.log_file, &mut self.prefixed_writer) {
+        match (&mut self.log_file, &mut self.writer) {
             (Some(log_file), Some(prefixed_writer)) => {
                 let _ = prefixed_writer.write(buf)?;
                 log_file.write(buf)
@@ -58,9 +58,14 @@ impl<W: Write> Write for LogWriter<W> {
             (Some(log_file), None) => log_file.write(buf),
             (None, Some(prefixed_writer)) => prefixed_writer.write(buf),
             (None, None) => {
-                // Should this be an error or even a panic?
-                debug!("no log file or prefixed writer");
-                Ok(0)
+                debug!(
+                    "No log file or prefixed writer to write to. This should only happen when \
+                     both caching is disabled and output logs are set to none."
+                );
+
+                // Returning the buffer's length so callers don't think this is a failure to
+                // create the buffer
+                Ok(buf.len())
             }
         }
     }
@@ -69,7 +74,7 @@ impl<W: Write> Write for LogWriter<W> {
         if let Some(log_file) = &mut self.log_file {
             log_file.flush()?;
         }
-        if let Some(prefixed_writer) = &mut self.prefixed_writer {
+        if let Some(prefixed_writer) = &mut self.writer {
             prefixed_writer.flush()?;
         }
 
@@ -78,7 +83,7 @@ impl<W: Write> Write for LogWriter<W> {
 }
 
 pub fn replay_logs<W: Write>(
-    output: &mut PrefixedUI<W>,
+    mut output: W,
     log_file_name: &AbsoluteSystemPath,
 ) -> Result<(), Error> {
     debug!("start replaying logs");
@@ -88,9 +93,6 @@ pub fn replay_logs<W: Write>(
         Error::CannotReadLogs(err)
     })?;
 
-    // Construct a PrefixedWriter which allows for non UTF-8 bytes to be written to
-    // it.
-    let mut prefixed_writer = output.output_prefixed_writer();
     let mut log_reader = BufReader::new(log_file);
 
     let mut buffer = Vec::new();
@@ -107,9 +109,7 @@ pub fn replay_logs<W: Write>(
         if !buffer.ends_with(b"\n") {
             buffer.push(b'\n');
         }
-        prefixed_writer
-            .write_all(&buffer)
-            .map_err(Error::CannotReadLogs)?;
+        output.write_all(&buffer).map_err(Error::CannotReadLogs)?;
 
         buffer.clear();
     }
@@ -128,8 +128,7 @@ mod tests {
     use turbopath::AbsoluteSystemPathBuf;
 
     use crate::{
-        logs::{replay_logs, PrefixedUI},
-        LogWriter, PrefixedWriter, BOLD, CYAN, UI,
+        logs::replay_logs, ColorConfig, LogWriter, PrefixedUI, PrefixedWriter, BOLD, CYAN,
     };
 
     #[test]
@@ -138,11 +137,11 @@ mod tests {
         let log_file_path = AbsoluteSystemPathBuf::try_from(dir.path().join("test.txt"))?;
         let mut prefixed_writer_output = Vec::new();
         let mut log_writer = LogWriter::default();
-        let ui = UI::new(false);
+        let color_config = ColorConfig::new(false);
 
         log_writer.with_log_file(&log_file_path)?;
-        log_writer.with_prefixed_writer(PrefixedWriter::new(
-            ui,
+        log_writer.with_writer(PrefixedWriter::new(
+            color_config,
             CYAN.apply_to(">".to_string()),
             &mut prefixed_writer_output,
         ));
@@ -172,16 +171,16 @@ mod tests {
 
     #[test]
     fn test_replay_logs() -> Result<()> {
-        let ui = UI::new(false);
+        let color_config = ColorConfig::new(false);
         let mut output = Vec::new();
         let mut err = Vec::new();
-        let mut prefixed_ui = PrefixedUI::new(ui, &mut output, &mut err)
+        let mut prefixed_ui = PrefixedUI::new(color_config, &mut output, &mut err)
             .with_output_prefix(CYAN.apply_to(">".to_string()))
             .with_warn_prefix(BOLD.apply_to(">!".to_string()));
         let dir = tempdir()?;
         let log_file_path = AbsoluteSystemPathBuf::try_from(dir.path().join("test.txt"))?;
         fs::write(&log_file_path, "\none fish\ntwo fish\nred fish\nblue fish")?;
-        replay_logs(&mut prefixed_ui, &log_file_path)?;
+        replay_logs(prefixed_ui.output_prefixed_writer(), &log_file_path)?;
 
         assert_eq!(
             String::from_utf8(output)?,
@@ -194,16 +193,16 @@ mod tests {
 
     #[test]
     fn test_replay_logs_invalid_utf8() -> Result<()> {
-        let ui = UI::new(true);
+        let color_config = ColorConfig::new(true);
         let mut output = Vec::new();
         let mut err = Vec::new();
-        let mut prefixed_ui = PrefixedUI::new(ui, &mut output, &mut err)
+        let mut prefixed_ui = PrefixedUI::new(color_config, &mut output, &mut err)
             .with_output_prefix(CYAN.apply_to(">".to_string()))
             .with_warn_prefix(BOLD.apply_to(">!".to_string()));
         let dir = tempdir()?;
         let log_file_path = AbsoluteSystemPathBuf::try_from(dir.path().join("test.txt"))?;
         fs::write(&log_file_path, [0, 159, 146, 150, b'\n'])?;
-        replay_logs(&mut prefixed_ui, &log_file_path)?;
+        replay_logs(prefixed_ui.output_prefixed_writer(), &log_file_path)?;
 
         assert_eq!(output, [b'>', 0, 159, 146, 150, b'\n']);
         Ok(())

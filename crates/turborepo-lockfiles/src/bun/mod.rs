@@ -118,6 +118,17 @@ impl Lockfile for BunLockfile {
         // if the types don't match then we changed package managers
         any_other.downcast_ref::<Self>().is_none()
     }
+
+    fn turbo_version(&self) -> Option<String> {
+        None
+    }
+
+    fn human_name(&self, package: &crate::Package) -> Option<String> {
+        let entry = self.inner.get(&package.key)?;
+        let name = entry.name.as_deref()?;
+        let version = &entry.version;
+        Some(format!("{name}@{version}"))
+    }
 }
 
 impl Entry {
