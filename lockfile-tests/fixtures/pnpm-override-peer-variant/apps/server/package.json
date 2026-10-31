@@ -6,6 +6,6 @@
     "@repo/backend": "workspace:*",
     "fastify": "^4.29.0",
     "inngest": "~3.51.0",
-    "zod": "^4.0.0"
+    "zod": "^4.6.6"
   }
 }
