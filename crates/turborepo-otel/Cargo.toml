@@ -18,7 +18,7 @@ opentelemetry-otlp = { version = "0.31", default-features = false, features = [
   "reqwest-client",
 ] }
 opentelemetry-semantic-conventions = "0.31"
-opentelemetry_sdk = { version = "0.31", default-features = false, features = [
+opentelemetry_sdk = { version = "0.32", default-features = false, features = [
   "metrics",
   "rt-tokio",
   "experimental_async_runtime",
